@@ -14,3 +14,7 @@ scripts/baseline_frozen.json
 scripts/prediction_eval_history.jsonl
 scripts/eval_comparison.log
 scripts/eval_cron.out
+
+# 本机文件：macOS 目录元数据、本地使用的 beautify-github-readme 技能
+.DS_Store
+beautify-github-readme/
