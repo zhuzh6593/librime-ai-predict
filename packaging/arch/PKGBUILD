@@ -4,7 +4,7 @@ pkgver=0.1.0
 pkgrel=2
 pkgdesc='Fcitx5 Rime frontend with local AI prediction, model and Pinyin schema'
 arch=('aarch64' 'x86_64')
-url='https://github.com/wyjrichhh/librime-ai-predict'
+url='https://github.com/openbankai/librime-ai-predict'
 license=('BSD-3-Clause' 'LGPL-2.1-or-later' 'GPL-2.0-or-later' 'MIT' 'Apache-2.0')
 depends=('fcitx5>=5.1.22' 'rime-luna-pinyin' 'rime-prelude' 'rime-essay' 'rime-stroke'
          'boost-libs' 'google-glog' 'yaml-cpp' 'gflags' 'leveldb' 'marisa'
@@ -19,10 +19,10 @@ _plugin_commit=$(git -C "$startdir/../.." rev-parse --verify HEAD) || exit 1
 _rime_commit=1b3417d2b6a11b5e50e0e1fa9dc396056aa11dce
 _fcitx_commit=f5048611ea60e53955d5f013f608551e85d38f09
 _rime_libdir=lib/fcitx5-rime-ai-predict
-source=("plugin::git+https://github.com/wyjrichhh/librime-ai-predict.git#commit=$_plugin_commit"
+source=("plugin::git+https://github.com/openbankai/librime-ai-predict.git#commit=$_plugin_commit"
         "librime::git+https://github.com/rime/librime.git#commit=$_rime_commit"
         "fcitx5-rime::git+https://github.com/fcitx/fcitx5-rime.git#commit=$_fcitx_commit"
-        'zh-base-ct2-int8.tar.gz::https://github.com/wyjrichhh/librime-ai-predict/releases/download/model-v1/zh-base-ct2-int8.tar.gz')
+        'zh-base-ct2-int8.tar.gz::https://github.com/openbankai/librime-ai-predict/releases/download/model-v1/zh-base-ct2-int8.tar.gz')
 sha256sums=('SKIP' 'SKIP' 'SKIP'
             '667d7f5e3c87073593e890299e917a28d45505e2c023692ac91e1b08354690d4')
 noextract=('zh-base-ct2-int8.tar.gz')

@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-DEFAULT_MODEL_URL="https://github.com/wyjrichhh/librime-ai-predict/releases/download/model-v1/zh-base-ct2-int8.tar.gz"
+DEFAULT_MODEL_URL="https://github.com/openbankai/librime-ai-predict/releases/download/model-v1/zh-base-ct2-int8.tar.gz"
 MODEL_URL="${MODEL_URL:-${DEFAULT_MODEL_URL}}"
 
 : "${RIME_USER_DATA_DIR:=${HOME}/Library/Rime}"

@@ -30,7 +30,7 @@ sudo pacman -S --needed base-devel git cmake ninja extra-cmake-modules boost \
 ## 获取并核对源码
 
 ```bash
-git clone https://github.com/wyjrichhh/librime-ai-predict.git
+git clone https://github.com/openbankai/librime-ai-predict.git
 cd librime-ai-predict
 git rev-parse HEAD
 git status --short
