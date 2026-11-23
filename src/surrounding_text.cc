@@ -4,6 +4,11 @@
 #include "surrounding_text.h"
 
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
+#include <chrono>
 #include <cstdint>
 #include <string>
 
@@ -115,11 +120,41 @@ const char* SurroundingTextPlatform() {
 #endif
 }
 
+#if defined(__APPLE__)
+namespace {
+
+// Ask macOS to show the "…wants to control this computer" dialog. Once per
+// process, and only when we are not trusted yet: the ad-hoc re-signature that
+// every local rebuild needs drops the existing grant, and hunting for the
+// Accessibility pane by hand is the worst part of the loop.
+void PromptForAccessibilityOnce() {
+  static bool prompted = false;
+  if (prompted)
+    return;
+  prompted = true;
+  const void* keys[] = {kAXTrustedCheckOptionPrompt};
+  const void* values[] = {kCFBooleanTrue};
+  CFDictionaryRef options =
+      CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1,
+                         &kCFTypeDictionaryKeyCallBacks,
+                         &kCFTypeDictionaryValueCallBacks);
+  if (!options)
+    return;
+  AXIsProcessTrustedWithOptions(options);
+  CFRelease(options);
+}
+
+}  // namespace
+#endif
+
 bool SurroundingTextPermitted() {
 #if defined(__APPLE__)
   int64_t now = NowMs();
   if (!g_permitted_known || now - g_last_check_ms > 10000) {
     g_permitted = AXIsProcessTrusted() ? true : false;
+    if (!g_permitted) {
+      PromptForAccessibilityOnce();
+    }
     g_permitted_known = true;
     g_last_check_ms = now;
   }
@@ -129,7 +164,8 @@ bool SurroundingTextPermitted() {
 #endif
 }
 
-string ReadSurroundingText(int max_chars, int timeout_ms) {
+// Blocking AX read. Runs on the refresh worker, never on a keystroke path.
+static string ReadSurroundingTextBlocking(int max_chars, int timeout_ms) {
 #if defined(__APPLE__)
   if (max_chars <= 0 || !SurroundingTextPermitted())
     return {};
@@ -235,6 +271,95 @@ string ReadSurroundingText(int max_chars, int timeout_ms) {
   return {};
 #endif
 }
+
+#if defined(__APPLE__)
+namespace {
+
+// How often the worker is allowed to touch AX while the field is changing.
+constexpr int64_t kRefreshIntervalMs = 250;
+// A snapshot older than this is dropped: after a pause we would rather fall
+// back to commit history than predict from text the user has since replaced.
+constexpr int64_t kMaxSnapshotAgeMs = 1500;
+
+struct SnapshotState {
+  std::mutex m;
+  std::condition_variable cv;
+  bool request = false;
+  bool stop = false;
+  bool worker_started = false;
+  string text;
+  int64_t text_ms = 0;
+  int max_chars = 0;
+  int timeout_ms = 200;
+};
+
+SnapshotState& Snapshot() {
+  static SnapshotState s;
+  return s;
+}
+
+void RefreshWorker() {
+  SnapshotState& s = Snapshot();
+  for (;;) {
+    int max_chars = 0;
+    int timeout_ms = 200;
+    {
+      std::unique_lock<std::mutex> lk(s.m);
+      s.cv.wait(lk, [&s] { return s.stop || s.request; });
+      if (s.stop)
+        return;
+      s.request = false;
+      max_chars = s.max_chars;
+      timeout_ms = s.timeout_ms;
+    }
+    string text = ReadSurroundingTextBlocking(max_chars, timeout_ms);
+    {
+      std::lock_guard<std::mutex> lk(s.m);
+      s.text = text;
+      s.text_ms = NowMs();
+    }
+  }
+}
+
+}  // namespace
+
+string ReadSurroundingText(int max_chars, int timeout_ms) {
+  // AX is cross-process IPC: a hung or very busy target app can stall it for
+  // far longer than a keystroke may take. Reading it inline used to make every
+  // key press wait on the frontmost app, so the actual read happens on a single
+  // background worker and callers only ever copy the last snapshot.
+  if (max_chars <= 0)
+    return {};
+
+  SnapshotState& s = Snapshot();
+  std::lock_guard<std::mutex> lk(s.m);
+  if (!s.worker_started) {
+    s.worker_started = true;
+    std::thread(RefreshWorker).detach();
+  }
+  s.max_chars = max_chars;
+  s.timeout_ms = timeout_ms > 0 ? timeout_ms : 200;
+
+  int64_t now = NowMs();
+  if (now - s.text_ms > kRefreshIntervalMs && !s.request) {
+    s.request = true;
+    s.cv.notify_one();
+  }
+
+  if (now - s.text_ms > kMaxSnapshotAgeMs)
+    return {};
+  return s.text;
+}
+
+#else
+
+string ReadSurroundingText(int max_chars, int timeout_ms) {
+  (void)max_chars;
+  (void)timeout_ms;
+  return {};
+}
+
+#endif
 
 }  // namespace predict
 }  // namespace rime
