@@ -163,6 +163,14 @@ void PredictionEngine::WorkerLoop() {
                   << ctx->composition().back().selected_index << ")";
         continue;
       }
+      if (!opt_.refresh_composition) {
+        // Cache is already updated above; the next keystroke's
+        // PredictTranslator::Query will hit it and surface the AI row inside
+        // a normal, freshly built menu. Refreshing the composition here (pop
+        // + recompose) visibly blinks the preedit on every pause, which users
+        // read as "my input appears then disappears".
+        continue;
+      }
       // A plain update_notifier won't do: ConcreteEngine::Compose skips
       // segments with status >= kGuess, so it would reuse the old menu and
       // never re-invoke PredictTranslator::Query. RefreshNonConfirmedComposition

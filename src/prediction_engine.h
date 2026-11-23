@@ -32,6 +32,11 @@ struct PredictionEngineOptions {
   int max_tokens = 256;
   /// >1 enables beam hypotheses (backend widens the beam accordingly).
   int num_hypotheses = 1;
+  /// When true, finished inferences call Context::RefreshNonConfirmedComposition
+  /// so the AI row appears without waiting for the next keystroke. That pop +
+  /// recompose makes the visible preedit blink on every pause, so the default
+  /// here is false: the result stays cached and surfaces on the next key.
+  bool refresh_composition = false;
 };
 
 class PredictionEngine {

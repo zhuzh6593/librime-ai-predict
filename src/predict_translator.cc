@@ -126,6 +126,10 @@ void PredictTranslator::LoadOptions() {
     engine_opt_.num_hypotheses = n;
     num_hypotheses_ = n;
   }
+  bool refresh = false;
+  if (config->GetBool("ai_predict/refresh_composition", &refresh)) {
+    engine_opt_.refresh_composition = refresh;
+  }
   string dev = "cpu";
   if (config->GetString("ai_predict/device", &dev)) {
     device_ = dev;
