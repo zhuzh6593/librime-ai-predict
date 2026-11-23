@@ -163,8 +163,15 @@ std::optional<PredictionContext> ContextBuilder::Build(
   // expose no AX value (some Electron/WebKit fields) and when the user has not
   // granted Accessibility permission.
   if (opt.use_surrounding_text) {
-    string field_text =
-        ReadSurroundingText(opt.surrounding_max_chars, opt.surrounding_timeout_ms);
+    // The preedit (marked text) is rendered INSIDE the field on macOS, so
+    // the AX snapshot would otherwise include the unconfirmed composition.
+    string composition_hint;
+    if (auto* ctx = engine->context()) {
+      composition_hint = ctx->GetPreedit().text;
+    }
+    string field_text = ReadSurroundingText(opt.surrounding_max_chars,
+                                            opt.surrounding_timeout_ms,
+                                            composition_hint);
     if (!field_text.empty()) {
       window_text = field_text;
     }

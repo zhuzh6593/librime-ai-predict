@@ -213,7 +213,8 @@ bool IsSecureTextField(AXUIElementRef element) {
 }  // namespace
 
 // Blocking AX read. Runs on the refresh worker, never on a keystroke path.
-static string ReadSurroundingTextBlocking(int max_chars, int timeout_ms) {
+static string ReadSurroundingTextBlocking(int max_chars, int timeout_ms,
+                                          const string& composition_hint) {
 #if defined(__APPLE__)
   if (max_chars <= 0 || !SurroundingTextPermitted())
     return {};
@@ -306,6 +307,17 @@ static string ReadSurroundingTextBlocking(int max_chars, int timeout_ms) {
   if (raw.empty())
     return {};
 
+  // Strip the in-flight composition (marked text) BEFORE the pinyin-tail
+  // pass: the hint is the full preedit ("今tian"), whose Hanzi part would
+  // survive StripTrailingPrompt and pollute the model context.
+  if (!composition_hint.empty() && raw.size() > composition_hint.size() &&
+      raw.compare(raw.size() - composition_hint.size(),
+                  composition_hint.size(), composition_hint) == 0) {
+    raw.resize(raw.size() - composition_hint.size());
+    DLOG(INFO) << "surrounding_text: stripped composition hint ('"
+               << composition_hint << "')";
+  }
+
   string stripped;
   StripTrailingPrompt(raw, &stripped);
   string normalized;
@@ -352,6 +364,9 @@ struct SnapshotState {
   int64_t text_ms = 0;
   int max_chars = 0;
   int timeout_ms = 200;
+  // Latest known preedit (marked) text, updated on every Query; the worker
+  // strips a matching suffix from each snapshot it takes.
+  string strip_hint;
 };
 
 SnapshotState& Snapshot() {
@@ -364,6 +379,7 @@ void RefreshWorker() {
   for (;;) {
     int max_chars = 0;
     int timeout_ms = 200;
+    string hint;
     {
       std::unique_lock<std::mutex> lk(s.m);
       s.cv.wait(lk, [&s] { return s.stop || s.request; });
@@ -372,8 +388,9 @@ void RefreshWorker() {
       s.request = false;
       max_chars = s.max_chars;
       timeout_ms = s.timeout_ms;
+      hint = s.strip_hint;
     }
-    string text = ReadSurroundingTextBlocking(max_chars, timeout_ms);
+    string text = ReadSurroundingTextBlocking(max_chars, timeout_ms, hint);
     {
       std::lock_guard<std::mutex> lk(s.m);
       s.text = text;
@@ -384,7 +401,8 @@ void RefreshWorker() {
 
 }  // namespace
 
-string ReadSurroundingText(int max_chars, int timeout_ms) {
+string ReadSurroundingText(int max_chars, int timeout_ms,
+                           const string& composition_hint) {
   // AX is cross-process IPC: a hung or very busy target app can stall it for
   // far longer than a keystroke may take. Reading it inline used to make every
   // key press wait on the frontmost app, so the actual read happens on a single
@@ -400,6 +418,7 @@ string ReadSurroundingText(int max_chars, int timeout_ms) {
   }
   s.max_chars = max_chars;
   s.timeout_ms = timeout_ms > 0 ? timeout_ms : 200;
+  s.strip_hint = composition_hint;
 
   int64_t now = NowMs();
   if (now - s.text_ms > kRefreshIntervalMs && !s.request) {
@@ -414,9 +433,11 @@ string ReadSurroundingText(int max_chars, int timeout_ms) {
 
 #else
 
-string ReadSurroundingText(int max_chars, int timeout_ms) {
+string ReadSurroundingText(int max_chars, int timeout_ms,
+                           const string& composition_hint) {
   (void)max_chars;
   (void)timeout_ms;
+  (void)composition_hint;
   return {};
 }
 

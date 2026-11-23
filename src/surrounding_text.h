@@ -25,8 +25,15 @@ namespace predict {
 /// permission, the focused app exposes no AX value (common in some
 /// Electron/WebKit fields), or the AX call exceeds `timeout_ms`.
 ///
+/// `composition_hint`: the IME's currently displayed preedit (marked) text.
+/// macOS inline preedit lives INSIDE the field's AXValue, so without this the
+/// unconfirmed composition ("今tian") pollutes every snapshot and the model's
+/// context/cache key churns on every keystroke. When the snapshot's tail
+/// matches the hint, that tail is removed first.
+///
 /// Reads only the text before the caret; never writes anything to disk.
-string ReadSurroundingText(int max_chars, int timeout_ms);
+string ReadSurroundingText(int max_chars, int timeout_ms,
+                           const string& composition_hint = {});
 
 /// True when this process may use the AX API at all. Cached after the first
 /// call because AXIsProcessTrusted() hits TCC every time.
