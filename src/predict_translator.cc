@@ -5,6 +5,7 @@
 
 #include "context_builder.h"
 #include "ct2_backend.h"
+#include "prediction_wire.h"
 
 #include <glog/logging.h>
 
@@ -121,6 +122,10 @@ void PredictTranslator::LoadOptions() {
   if (config->GetInt("ai_predict/max_tokens", &n) && n > 0) {
     engine_opt_.max_tokens = n;
   }
+  if (config->GetInt("ai_predict/num_hypotheses", &n) && n > 0) {
+    engine_opt_.num_hypotheses = n;
+    num_hypotheses_ = n;
+  }
   string dev = "cpu";
   if (config->GetString("ai_predict/device", &dev)) {
     device_ = dev;
@@ -222,29 +227,42 @@ an<Translation> PredictTranslator::Query(const string& input,
             << " effective_prompt='" << built->effective_prompt << "'"
             << " cache_key='" << built->cache_key << "'";
 
-  if (auto raw = prediction_->GetCachedResult(built->cache_key)) {
-    if (!raw->empty()) {
-      const string display = ExtractDisplayText(*raw);
-      // A cached result is deterministic: if its display text is unusable
-      // (empty after punctuation strip, carrying Latin residue, or a single
-      // Hanzi the dictionary ranks better), re-scheduling would recompute the
-      // SAME unusable output and refresh again -- a busy loop. So on a HIT we
-      // either surface the candidate or give up for this key; we never fall
-      // through to Schedule().
-      if (!display.empty() && IsDisplayableCandidate(display, built->effective_prompt) &&
-          CountHan(display) >= min_hanzi_) {
-        LOG(INFO) << "ai_predict_translator: cache HIT display='" << display << "'";
-        PublishAITextProperty(engine_, display);
-        auto cand = New<SimpleCandidate>("ai_predict", segment.start, segment.end,
-                                         display, "AI");
-        cand->set_quality(ai_quality_);
-        return New<AIPredictTranslation>(cand);
+  if (auto preds = prediction_->GetCachedResult(built->cache_key)) {
+    // A cached result is deterministic: if its display text is unusable
+    // (empty after punctuation strip, carrying Latin residue, or fewer Hanzi
+    // than min_hanzi_), re-scheduling would recompute the SAME unusable
+    // output and refresh again -- a busy loop. So on a HIT we either surface
+    // the survivors or give up for this key; we never fall through to
+    // Schedule().
+    std::vector<Prediction> kept;
+    for (const auto& pr : *preds) {
+      const string display = ExtractDisplayText(pr.text);
+      if (display.empty() || !IsDisplayableCandidate(display, built->effective_prompt) ||
+          CountHan(display) < min_hanzi_) {
+        continue;
       }
-      LOG(INFO) << "ai_predict_translator: cache HIT suppressed (unusable display)"
-                << " raw='" << *raw << "'";
-      PublishAITextProperty(engine_, "");
-      return nullptr;
+      Prediction kept_pred;
+      kept_pred.text = display;
+      kept_pred.score = pr.score;
+      kept.push_back(std::move(kept_pred));
     }
+    if (!kept.empty()) {
+      LOG(INFO) << "ai_predict_translator: cache HIT, surfacing " << kept.size()
+                << " candidate(s), top='" << kept.front().text
+                << "' score=" << kept.front().score;
+      PublishAITextProperty(engine_, wire::Encode(kept));
+      // The translator-side candidate is a fallback for setups without
+      // ai_predict_filter (which strips AI-typed rows and re-injects from the
+      // property above, honoring per-hypothesis scores).
+      auto cand = New<SimpleCandidate>("ai_predict", segment.start, segment.end,
+                                       kept.front().text, "AI");
+      cand->set_quality(ai_quality_);
+      return New<AIPredictTranslation>(cand);
+    }
+    LOG(INFO) << "ai_predict_translator: cache HIT suppressed (all "
+              << preds->size() << " unusable)";
+    PublishAITextProperty(engine_, "");
+    return nullptr;
   }
 
   LOG(INFO) << "ai_predict_translator: cache MISS, scheduling inference";

@@ -125,33 +125,59 @@ void CT2Backend::Shutdown() {
   initialized_.store(false, std::memory_order_release);
 }
 
-std::optional<std::string> CT2Backend::Predict(const std::string& prompt,
-                                               int max_tokens) {
+namespace {
+
+std::string StripSpecialTags(std::string result) {
+  const std::string special_tags[] = {
+      "<hanzi_start>", "</hanzi_start>", "<pinyin_start>", "</pinyin_start>",
+      "<s>", "</s>", "<pad>"};
+  for (const auto& tag : special_tags) {
+    size_t pos;
+    while ((pos = result.find(tag)) != std::string::npos) {
+      result.replace(pos, tag.length(), "");
+    }
+  }
+  result.erase(std::remove(result.begin(), result.end(), ' '), result.end());
+  return result;
+}
+
+}  // namespace
+
+std::vector<Prediction> CT2Backend::Predict(const std::string& prompt,
+                                            int max_tokens,
+                                            int num_hypotheses) {
   if (!initialized_.load(std::memory_order_acquire)) {
     LOG(ERROR) << "CT2Backend::Predict: service not initialized";
-    return std::nullopt;
+    return {};
+  }
+  if (num_hypotheses < 1) {
+    num_hypotheses = 1;
   }
 
   auto start_time = std::chrono::steady_clock::now();
 
   try {
     if (prompt.empty()) {
-      return std::nullopt;
+      return {};
     }
 
     std::vector<std::string> source_tokens = Tokenize(prompt);
 
     if (source_tokens.size() <= 2) {
-      return std::nullopt;
+      return {};
     }
 
     ctranslate2::TranslationOptions options;
-    options.beam_size = kCt2DefaultBeamSize;
+    // Beam search must be at least as wide as the hypothesis count; widening
+    // it a little keeps the runner-up hypotheses from being trivial prefix
+    // variants of the winner.
+    options.beam_size = (std::max)(kCt2DefaultBeamSize, num_hypotheses);
     options.max_decoding_length = max_tokens;
     options.length_penalty = kCt2DefaultLengthPenalty;
     options.repetition_penalty = kCt2DefaultRepetitionPenalty;
     options.sampling_topk = kCt2DefaultSamplingTopk;
-    options.num_hypotheses = kCt2DefaultNumHypotheses;
+    options.num_hypotheses = num_hypotheses;
+    options.return_scores = true;
 
     std::vector<std::string> end_tokens;
     if (token_to_id_.count("</hanzi_start>")) {
@@ -164,51 +190,48 @@ std::optional<std::string> CT2Backend::Predict(const std::string& prompt,
       options.end_token = end_tokens;
     }
 
-    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::steady_clock::now() - start_time)
-                          .count();
-
-    if (elapsed_ms > kCt2DefaultTimeoutMs) {
-      return std::nullopt;
-    }
-
     std::vector<std::vector<std::string>> batch = {source_tokens};
     auto results = translator_->translate_batch(batch, options);
 
     if (results.empty() || results[0].hypotheses.empty()) {
-      return std::nullopt;
+      return {};
     }
 
-    const auto& output_tokens = results[0].output();
-    std::string result = Detokenize(output_tokens);
-
-    const std::string special_tags[] = {
-        "<hanzi_start>", "</hanzi_start>", "<pinyin_start>", "</pinyin_start>",
-        "<s>", "</s>", "<pad>"};
-    for (const auto& tag : special_tags) {
-      size_t pos;
-      while ((pos = result.find(tag)) != std::string::npos) {
-        result.replace(pos, tag.length(), "");
+    std::vector<Prediction> out;
+    std::set<std::string> seen;
+    const auto& hyps = results[0].hypotheses;
+    for (size_t i = 0; i < hyps.size(); ++i) {
+      std::string result = StripSpecialTags(Detokenize(hyps[i]));
+      if (result.empty() || !seen.insert(result).second) {
+        continue;
       }
-    }
-
-    result.erase(std::remove(result.begin(), result.end(), ' '), result.end());
-
-    if (result.empty()) {
-      return std::nullopt;
+      // Mean log-prob per generated token keeps short and long suggestions on
+      // one scale; guard against empty sequences / missing scores.
+      const size_t n = std::max<size_t>(hyps[i].size(), 1);
+      float score = 0.0f;
+      if (i < results[0].scores.size()) {
+        score = results[0].scores[i] / static_cast<float>(n);
+      }
+      Prediction pr;
+      pr.text = result;
+      pr.score = score;
+      out.push_back(std::move(pr));
     }
 
     auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::steady_clock::now() - start_time)
                            .count();
-    DLOG(INFO) << "CT2Backend::Predict " << result.size() << " chars in "
-               << duration_ms << "ms";
+    DLOG(INFO) << "CT2Backend::Predict " << out.size() << "/" << num_hypotheses
+               << " hypotheses in " << duration_ms << "ms"
+               << (out.empty() ? ""
+                               : " top_score=" +
+                                     std::to_string(out.front().score));
 
-    return result;
+    return out;
 
   } catch (const std::exception& e) {
     LOG(ERROR) << "CT2Backend::Predict: " << e.what();
-    return std::nullopt;
+    return {};
   }
 }
 

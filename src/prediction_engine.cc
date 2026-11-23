@@ -52,11 +52,11 @@ void PredictionEngine::Schedule(const PredictionContext& ctx) {
   worker_cv_.notify_one();
 }
 
-std::optional<std::string> PredictionEngine::GetCachedResult(
+std::optional<std::vector<Prediction>> PredictionEngine::GetCachedResult(
     const std::string& cache_key) const {
   std::lock_guard<std::mutex> lock(result_mutex_);
-  if (cache_key == last_cache_key_ && last_raw_result_) {
-    return last_raw_result_;
+  if (cache_key == last_cache_key_ && last_result_) {
+    return last_result_;
   }
   return std::nullopt;
 }
@@ -64,7 +64,7 @@ std::optional<std::string> PredictionEngine::GetCachedResult(
 void PredictionEngine::ClearCache() {
   std::lock_guard<std::mutex> lock(result_mutex_);
   last_cache_key_.clear();
-  last_raw_result_.reset();
+  last_result_.reset();
 }
 
 void PredictionEngine::WorkerLoop() {
@@ -107,24 +107,29 @@ void PredictionEngine::WorkerLoop() {
     }
 
     LOG(INFO) << "PredictionEngine: invoking backend ct2_input='" << ct2_input
-              << "' max_tokens=" << opt_.max_tokens;
+              << "' max_tokens=" << opt_.max_tokens
+              << " num_hypotheses=" << opt_.num_hypotheses;
     auto t0 = std::chrono::steady_clock::now();
-    auto result = backend_->Predict(ct2_input, opt_.max_tokens);
+    auto result = backend_->Predict(ct2_input, opt_.max_tokens,
+                                    opt_.num_hypotheses);
     auto dt_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                      std::chrono::steady_clock::now() - t0)
                      .count();
-    if (!result || result->empty()) {
+    if (result.empty()) {
       LOG(WARNING) << "PredictionEngine: inference failed or empty (took "
                    << dt_ms << " ms)";
       continue;
     }
-    LOG(INFO) << "PredictionEngine: backend returned raw='" << *result
-              << "' (took " << dt_ms << " ms)";
+    LOG(INFO) << "PredictionEngine: backend returned " << result.size()
+              << " hypothesis(es), top='"
+              << (result.empty() ? string() : result.front().text)
+              << "' score=" << result.front().score << " (took " << dt_ms
+              << " ms)";
 
     {
       std::lock_guard<std::mutex> lock(result_mutex_);
       last_cache_key_ = cache_key;
-      last_raw_result_ = result;
+      last_result_ = std::move(result);
     }
 
     if (engine_ && engine_->context()) {

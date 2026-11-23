@@ -7,7 +7,7 @@
 #define RIME_PREDICT_PREDICTION_ENGINE_H_
 
 #include "context_builder.h"
-#include "inference_backend.h"
+#include "inference_backend.h"  // Prediction
 
 #include <rime/common.h>
 
@@ -30,6 +30,8 @@ namespace predict {
 struct PredictionEngineOptions {
   int debounce_ms = 200;
   int max_tokens = 256;
+  /// >1 enables beam hypotheses (backend widens the beam accordingly).
+  int num_hypotheses = 1;
 };
 
 class PredictionEngine {
@@ -44,10 +46,12 @@ class PredictionEngine {
   /// Enqueue CT2 inference; returns immediately. On completion, notifies context.
   void Schedule(const PredictionContext& ctx);
 
-  /// Last completed raw model output keyed by `PredictionContext::cache_key`
+  /// Last completed predictions keyed by `PredictionContext::cache_key`
   /// (which combines window_text and effective_prompt to avoid
-  /// cross-context pollution).
-  std::optional<std::string> GetCachedResult(const std::string& cache_key) const;
+  /// cross-context pollution). Sorted by descending score; empty vector
+  /// inside the optional means "ran, produced nothing usable".
+  std::optional<std::vector<Prediction>> GetCachedResult(
+      const std::string& cache_key) const;
 
   void ClearCache();
 
@@ -73,7 +77,7 @@ class PredictionEngine {
 
   mutable std::mutex result_mutex_;
   std::string last_cache_key_;
-  std::optional<std::string> last_raw_result_;
+  std::optional<std::vector<Prediction>> last_result_;
 };
 
 }  // namespace predict

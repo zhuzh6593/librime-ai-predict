@@ -164,6 +164,54 @@ bool SurroundingTextPermitted() {
 #endif
 }
 
+namespace {
+
+// Privacy: password / OTP fields must never reach the model. macOS exposes
+// secure NSTextFields with the AXSecureTextField subrole; WebKit/Chromium
+// fields often lack it but mask the value as bullets or asterisks.
+bool LooksLikeMaskedValue(CFStringRef s) {
+  CFIndex len = CFStringGetLength(s);
+  if (len == 0)
+    return false;
+  for (CFIndex i = 0; i < len; ++i) {
+    UniChar c = CFStringGetCharacterAtIndex(s, i);
+    if (c != 0x2022 && c != 0x00B7 && c != 0x25CF && c != '*')
+      return false;
+  }
+  return true;
+}
+
+bool IsSecureTextField(AXUIElementRef element) {
+  static const CFStringRef kSecureSubrole = CFSTR("AXSecureTextField");
+  CFTypeRef subrole = CopyAttribute(element, kAXSubroleAttribute);
+  if (subrole) {
+    if (CFGetTypeID(subrole) == CFStringGetTypeID() &&
+        CFStringCompare(static_cast<CFStringRef>(subrole), kSecureSubrole,
+                        kCFCompareCaseInsensitive) == 0) {
+      CFRelease(subrole);
+      return true;
+    }
+    CFRelease(subrole);
+  }
+  CFTypeRef role_desc = CopyAttribute(element, kAXRoleDescriptionAttribute);
+  if (role_desc) {
+    if (CFGetTypeID(role_desc) == CFStringGetTypeID()) {
+      CFStringRef rd = static_cast<CFStringRef>(role_desc);
+      if (CFStringFind(rd, CFSTR("password"), kCFCompareCaseInsensitive)
+                  .location != kCFNotFound ||
+          CFStringFind(rd, CFSTR("secure"), kCFCompareCaseInsensitive)
+                  .location != kCFNotFound) {
+        CFRelease(role_desc);
+        return true;
+      }
+    }
+    CFRelease(role_desc);
+  }
+  return false;
+}
+
+}  // namespace
+
 // Blocking AX read. Runs on the refresh worker, never on a keystroke path.
 static string ReadSurroundingTextBlocking(int max_chars, int timeout_ms) {
 #if defined(__APPLE__)
@@ -185,6 +233,12 @@ static string ReadSurroundingTextBlocking(int max_chars, int timeout_ms) {
   float timeout_s = static_cast<float>(timeout_ms > 0 ? timeout_ms : 200) / 1000.0f;
   AXUIElementSetMessagingTimeout(element, timeout_s);
 
+  // Privacy gate: secure fields yield nothing to the model.
+  if (IsSecureTextField(element)) {
+    CFRelease(element);
+    return {};
+  }
+
   string raw;
 
   // Primary path: full value + caret offset, both available on native AppKit
@@ -203,6 +257,13 @@ static string ReadSurroundingTextBlocking(int max_chars, int timeout_ms) {
   if (value) {
     if (CFGetTypeID(value) == CFStringGetTypeID()) {
       CFStringRef str = static_cast<CFStringRef>(value);
+      if (LooksLikeMaskedValue(str)) {
+        // The "value" is a mask (bullets/asterisks): a password field that
+        // skipped the subrole check. Discard everything.
+        CFRelease(value);
+        CFRelease(element);
+        return {};
+      }
       CFIndex len = CFStringGetLength(str);
       CFIndex end = (caret.location >= 0 && caret.location <= len)
                         ? caret.location

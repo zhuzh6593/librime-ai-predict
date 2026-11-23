@@ -4,6 +4,7 @@
 #include "predict_filter.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <vector>
 
 #include <glog/logging.h>
@@ -16,6 +17,7 @@
 #include <rime/translation.h>
 
 #include "frontend_protocol.h"
+#include "prediction_wire.h"
 
 namespace rime {
 namespace predict {
@@ -39,23 +41,28 @@ void PublishCommentHighlight(Engine* engine, int index) {
 }
 
 /// Wraps an upstream translation, prefetches up to `search_range` candidates,
-/// then places the AI prediction (read from the engine's context property) at
-/// `target_index`. Placement policy:
-/// 1. AI text already at slot #1 → do nothing (the top slot already carries it;
-///    a relabel or duplicate row would just be noise).
-/// 2. AI text matches a candidate further down → promote that one (no dup row).
-/// 3. AI text is novel → insert a fresh candidate.
+/// then places the AI predictions (read from the engine's context property)
+/// starting at their earned slot. Placement policy:
+/// 1. Top hypothesis clears promote_score_ → slot #0; otherwise target_index_.
+/// 2. Primary AI text already at that slot → do nothing (a relabel or
+///    duplicate row would just be noise).
+/// 3. Primary AI text matches a candidate further down → promote that one
+///    (no dup row). Novel → insert a fresh candidate.
+/// 4. Remaining hypotheses are appended right after the primary row, skipping
+///    any that already exist in the upstream window (no duplicates).
 ///
 /// AI-typed candidates emitted upstream by PredictTranslator are stripped up
 /// front, so this filter is the single source of truth for the AI row.
 class AIPredictFilteredTranslation : public Translation {
  public:
   AIPredictFilteredTranslation(an<Translation> upstream,
-                               const string& ai_text,
+                               std::vector<Prediction> ai_rows,
+                               double promote_score,
                                size_t target_index,
                                size_t search_range)
       : upstream_(std::move(upstream)),
-        ai_text_(ai_text),
+        ai_rows_(std::move(ai_rows)),
+        promote_score_(promote_score),
         target_index_(target_index),
         search_range_(search_range) {
     Build();
@@ -120,7 +127,7 @@ class AIPredictFilteredTranslation : public Translation {
       }
     }
 
-    if (ai_text_.empty()) {
+    if (ai_rows_.empty()) {
       // No AI suggestion in flight; pass everything through unchanged.
       reordered_ = std::move(buf);
       return;
@@ -140,53 +147,109 @@ class AIPredictFilteredTranslation : public Translation {
       return;
     }
 
-    if (buf.front() && buf.front()->text() == ai_text_) {
-      LOG(INFO) << "ai_predict_filter: dedup -- AI text '" << ai_text_
-                << "' already at slot #1; leaving candidate list unchanged";
-      reordered_ = std::move(buf);
-      return;
+    const string& primary_text = ai_rows_.front().text;
+    // Score-based placement: a confident top hypothesis earns slot #0,
+    // anything weaker falls back to the configured target slot.
+    const bool promotes = ai_rows_.front().score >= promote_score_;
+    size_t slot = promotes ? 0 : target_index_;
+
+    auto text_in_buf = [&buf](const string& t) {
+      return std::any_of(buf.begin(), buf.end(),
+                         [&](const an<Candidate>& c) {
+                           return c && c->text() == t;
+                         });
+    };
+
+    // Rows to inject: primary first, then runner-up hypotheses that the
+    // dictionary window does not already show (no duplicate rows).
+    std::vector<Prediction> inject;
+    inject.push_back(ai_rows_.front());
+    for (size_t i = 1; i < ai_rows_.size(); ++i) {
+      const string& t = ai_rows_[i].text;
+      if (t == primary_text || text_in_buf(t)) {
+        continue;
+      }
+      inject.push_back(ai_rows_[i]);
     }
 
     // Promote an existing match (wrapped so type/preedit/quality survive and
     // only the comment changes) rather than inserting a second copy.
-    an<Candidate> ai_cand;
-    auto dup = std::find_if(buf.begin() + 1, buf.end(),
-                            [this](const an<Candidate>& c) {
-                              return c && c->text() == ai_text_;
+    an<Candidate> primary_cand;
+    bool primary_untouched = false;
+    auto dup = std::find_if(buf.begin(), buf.end(),
+                            [&primary_text](const an<Candidate>& c) {
+                              return c && c->text() == primary_text;
                             });
-    if (dup != buf.end()) {
+    if (dup != buf.end() &&
+        static_cast<size_t>(std::distance(buf.begin(), dup)) == slot) {
+      // The dictionary already shows the primary text at the target slot;
+      // leave that row alone and only append the runner-ups after it.
+      primary_untouched = true;
+      LOG(INFO) << "ai_predict_filter: primary '" << primary_text
+                << "' already at slot #" << slot << "; appending "
+                << (inject.size() - 1) << " runner-up(s)";
+    } else if (dup != buf.end()) {
       auto matched = *dup;
       size_t orig_pos = std::distance(buf.begin(), dup);
       buf.erase(dup);
-      ai_cand = New<ShadowCandidate>(matched, kAICandidateType,
-                                     /*text=*/string(),
-                                     /*comment=*/kAICommentMarker,
-                                     /*inherit_comment=*/false);
+      primary_cand = New<ShadowCandidate>(matched, kAICandidateType,
+                                          /*text=*/string(),
+                                          /*comment=*/kAICommentMarker,
+                                          /*inherit_comment=*/false);
       LOG(INFO) << "ai_predict_filter: promoted existing candidate '"
                 << matched->text() << "' (was at slot #" << orig_pos
-                << ", type=" << matched->type() << ") to slot #"
-                << target_index_ << " with AI marker";
+                << ", type=" << matched->type() << ") to slot #" << slot
+                << " with AI marker";
     } else {
       // ShadowCandidate（shadow 到上游首候选）：librime 对 shadow 候选的
       // 确认/commit 走标准路径；SimpleCandidate 自定义类型选中时 commit 为空
-      ai_cand = New<ShadowCandidate>(buf.front(), kAICandidateType,
-                                     ai_text_, kAICommentMarker,
-                                     /*inherit_comment=*/false);
-      LOG(INFO) << "ai_predict_filter: inserted new AI candidate '"
-                << ai_text_ << "' at slot #" << target_index_;
+      primary_cand = New<ShadowCandidate>(buf.front(), kAICandidateType,
+                                          primary_text, kAICommentMarker,
+                                          /*inherit_comment=*/false);
+      LOG(INFO) << "ai_predict_filter: inserted '" << primary_text
+                << "' at slot #" << slot << " (score="
+                << ai_rows_.front().score << ", promote=" << promotes << ")";
     }
 
-    // 4. Splice with AI at target_index_.
-    reordered_.reserve(buf.size() + 1);
-    size_t pos = (std::min)(target_index_, buf.size());
-    for (size_t i = 0; i < pos; ++i) reordered_.push_back(buf[i]);
-    reordered_.push_back(ai_cand);
-    for (size_t i = pos; i < buf.size(); ++i) reordered_.push_back(buf[i]);
-    ai_inserted_index_ = static_cast<int>(pos);
+    // Splice: everything before slot, the AI rows (primary first, runner-ups
+    // by descending score right after), then the rest of the dictionary.
+    if (slot > buf.size()) {
+      slot = buf.size();
+    }
+    auto push_secondary = [&](const Prediction& row) {
+      reordered_.push_back(New<ShadowCandidate>(
+          buf.front(), kAICandidateType, row.text, kAICommentMarker,
+          /*inherit_comment=*/false));
+    };
+    reordered_.reserve(buf.size() + inject.size());
+    for (size_t i = 0; i < slot; ++i) {
+      reordered_.push_back(buf[i]);
+    }
+    if (primary_untouched) {
+      // The dictionary already carries the primary text at `slot`; keep that
+      // row in place and slot the runner-ups in directly after it.
+      reordered_.push_back(buf[slot]);
+      for (size_t i = 1; i < inject.size(); ++i) {
+        push_secondary(inject[i]);
+      }
+      for (size_t i = slot + 1; i < buf.size(); ++i) {
+        reordered_.push_back(buf[i]);
+      }
+    } else {
+      reordered_.push_back(primary_cand);
+      for (size_t i = 1; i < inject.size(); ++i) {
+        push_secondary(inject[i]);
+      }
+      for (size_t i = slot; i < buf.size(); ++i) {
+        reordered_.push_back(buf[i]);
+      }
+    }
+    ai_inserted_index_ = static_cast<int>(slot);
   }
 
   an<Translation> upstream_;
-  string ai_text_;
+  std::vector<Prediction> ai_rows_;
+  double promote_score_;
   size_t target_index_;
   size_t search_range_;
 
@@ -216,11 +279,23 @@ PredictFilter::PredictFilter(const Ticket& ticket)
   if (cfg->GetInt("ai_predict/search_range", &n) && n > 0) {
     search_range_ = static_cast<size_t>(n);
   }
+  double ps = 0.0;
+  if (cfg->GetDouble("ai_predict/promote_score", &ps)) {
+    promote_score_ = ps;
+  } else {
+    // The deployer serializes negative floats as quoted strings
+    // ("promote_score: \"-0.45\""), which GetDouble refuses; coerce then.
+    std::string ps_str;
+    if (cfg->GetString("ai_predict/promote_score", &ps_str)) {
+      promote_score_ = std::atof(ps_str.c_str());
+    }
+  }
   bool enabled = true;
   if (cfg->GetBool("ai_predict/enabled", &enabled)) {
     enabled_ = enabled;
   }
   LOG(INFO) << "ai_predict_filter: ctor target_index=" << target_index_
+            << " promote_score=" << promote_score_
             << " search_range=" << search_range_ << " enabled=" << enabled_;
 }
 
@@ -229,8 +304,9 @@ an<Translation> PredictFilter::Apply(an<Translation> translation,
   if (!engine_ || !engine_->context() || !translation) {
     return translation;
   }
-  string ai_text = engine_->context()->get_property(kAITextProperty);
-  if (ai_text.empty()) {
+  std::vector<Prediction> ai_rows =
+      wire::Decode(engine_->context()->get_property(kAITextProperty));
+  if (ai_rows.empty()) {
     // No AI in flight this Compose; clear any stale highlight from the
     // previous frame so the frontend doesn't keep colouring a row that no
     // longer carries AI semantics.
@@ -238,7 +314,8 @@ an<Translation> PredictFilter::Apply(an<Translation> translation,
     return translation;
   }
   auto wrapped = New<AIPredictFilteredTranslation>(
-      std::move(translation), ai_text, target_index_, search_range_);
+      std::move(translation), std::move(ai_rows), promote_score_,
+      target_index_, search_range_);
   // Publish the index where the AI row landed (or -1 if none was inserted,
   // e.g. dedup against slot #1). Synchronous on Compose() so the frontend
   // has the index before it observes the new menu.

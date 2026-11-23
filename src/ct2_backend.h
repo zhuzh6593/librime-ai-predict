@@ -42,8 +42,9 @@ class CT2Backend : public InferenceBackend {
     return initialized_.load(std::memory_order_acquire);
   }
 
-  std::optional<std::string> Predict(const std::string& prompt,
-                                     int max_tokens) override;
+  std::vector<Prediction> Predict(const std::string& prompt,
+                                  int max_tokens,
+                                  int num_hypotheses) override;
 
  private:
   bool LoadSharedVocabulary(const std::string& path);

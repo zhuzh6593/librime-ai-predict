@@ -8,6 +8,8 @@
 #ifndef RIME_PREDICT_PREDICT_FILTER_H_
 #define RIME_PREDICT_PREDICT_FILTER_H_
 
+#include "inference_backend.h"
+
 #include <rime/filter.h>
 #include <rime/gear/filter_commons.h>
 #include <rime/translation.h>
@@ -27,8 +29,13 @@ class PredictFilter : public Filter, TagMatching {
   }
 
  private:
-  /// Where to place the AI candidate (0-based; default 1 → second slot).
+  /// Where to place the AI candidate when its score does NOT clear
+  /// promote_score_ (0-based; default 1 → second slot).
   size_t target_index_ = 1;
+  /// Mean log-prob per token at which the top hypothesis earns slot #0.
+  /// Set very negative (e.g. -999) to disable score-based placement and
+  /// always use target_index_.
+  double promote_score_ = -0.45;
   /// How many upstream candidates to scan when looking for a text-match dedup.
   size_t search_range_ = 10;
   /// Kill switch: false makes the filter a no-op (see ai_predict/enabled).

@@ -38,10 +38,11 @@ class PredictTranslator : public Translator {
   bool enabled_ = true;
   /// Candidate quality for merged ordering; default -1 yields first slot to script candidates.
   double ai_quality_ = -1.0;
-  /// Min Hanzi count for a prediction to be surfaced. Single-Hanzi homophones
-  /// are the schema dictionary's strength and the model's weakness (no frequency
-  /// signal), so we let the dictionary take those and only surface 2+ Hanzi.
-  int min_hanzi_ = 2;
+  /// Min Hanzi count for a prediction to be surfaced. Lowered to 1 once the
+  /// surrounding-text feature made digit+unit patterns (17ge → 个) a target.
+  int min_hanzi_ = 1;
+  /// >1 requests beam hypotheses from the backend (multi-candidate mode).
+  int num_hypotheses_ = 1;
 
   std::unique_ptr<PredictionEngine> prediction_;
   bool init_attempted_ = false;
