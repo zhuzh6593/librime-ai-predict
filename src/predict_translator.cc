@@ -105,6 +105,16 @@ void PredictTranslator::LoadOptions() {
   if (config->GetInt("ai_predict/context_window_size", &n) && n > 0) {
     ctx_opt_.context_window_size = n;
   }
+  bool use_surrounding = true;
+  if (config->GetBool("ai_predict/use_surrounding_text", &use_surrounding)) {
+    ctx_opt_.use_surrounding_text = use_surrounding;
+  }
+  if (config->GetInt("ai_predict/surrounding_max_chars", &n) && n > 0) {
+    ctx_opt_.surrounding_max_chars = n;
+  }
+  if (config->GetInt("ai_predict/surrounding_timeout_ms", &n) && n > 0) {
+    ctx_opt_.surrounding_timeout_ms = n;
+  }
   if (config->GetInt("ai_predict/debounce_ms", &n) && n > 0) {
     engine_opt_.debounce_ms = n;
   }
@@ -131,6 +141,8 @@ void PredictTranslator::LoadOptions() {
             << " min_input_length=" << ctx_opt_.min_effective_length
             << " min_context_prompt_length=" << ctx_opt_.min_context_prompt_length
             << " context_window_size=" << ctx_opt_.context_window_size
+            << " use_surrounding_text=" << ctx_opt_.use_surrounding_text
+            << " surrounding_max_chars=" << ctx_opt_.surrounding_max_chars
             << " debounce_ms=" << engine_opt_.debounce_ms
             << " max_tokens=" << engine_opt_.max_tokens
             << " device=" << device_

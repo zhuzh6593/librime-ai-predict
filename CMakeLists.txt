@@ -56,6 +56,10 @@ endif()
 if(APPLE)
   find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
   list(APPEND CTRANSLATE2_LIBRARIES ${ACCELERATE_FRAMEWORK})
+  # surrounding_text.cc talks to the Accessibility API to read the focused
+  # text field's preceding text.
+  find_library(APPLICATION_SERVICES_FRAMEWORK ApplicationServices REQUIRED)
+  list(APPEND CTRANSLATE2_LIBRARIES ${APPLICATION_SERVICES_FRAMEWORK})
 endif()
 list(APPEND CTRANSLATE2_LIBRARIES ${CMAKE_DL_LIBS})
 
@@ -67,6 +71,7 @@ set(RIME_AI_PREDICT_SRC
   src/context_builder.cc
   src/ct2_backend.cc
   src/frontend_protocol.cc
+  src/surrounding_text.cc
 )
 
 add_library(rime-ai-predict-objs OBJECT ${RIME_AI_PREDICT_SRC})

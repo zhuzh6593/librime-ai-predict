@@ -46,6 +46,14 @@ struct ContextBuilderOptions {
   int min_context_prompt_length = 2;
   /// Max history records to scan for the sliding window.
   int context_window_size = 10;
+  /// Prefer the focused text field's text before the caret (macOS Accessibility)
+  /// over commit history. Falls back to history when AX is unavailable -- see
+  /// surrounding_text.h for the failure modes.
+  bool use_surrounding_text = true;
+  /// Characters before the caret to read.
+  int surrounding_max_chars = 32;
+  /// AX messaging timeout in ms; a hung target app must not stall prediction.
+  int surrounding_timeout_ms = 200;
 };
 
 class ContextBuilder {

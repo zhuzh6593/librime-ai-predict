@@ -18,3 +18,8 @@ scripts/eval_cron.out
 # 本机文件：macOS 目录元数据、本地使用的 beautify-github-readme 技能
 .DS_Store
 beautify-github-readme/
+
+# `make deps` 产物：CTranslate2 静态库与头文件，由本地构建生成
+include/
+lib/
+build/

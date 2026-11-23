@@ -3,6 +3,8 @@
 
 #include "context_builder.h"
 
+#include "surrounding_text.h"
+
 #include <algorithm>
 #include <vector>
 #include <utf8.h>
@@ -10,6 +12,8 @@
 #include <rime/commit_history.h>
 #include <rime/context.h>
 #include <rime/engine.h>
+
+#include <glog/logging.h>
 
 namespace rime {
 namespace predict {
@@ -151,6 +155,36 @@ std::optional<PredictionContext> ContextBuilder::Build(
   if (engine && engine->context()) {
     BuildWindowContext(engine->context(), opt.context_window_size,
                        &window_text);
+  }
+
+  // The focused text field is ground truth: it sees pasted text, text typed
+  // with another IME, and text the caret moved into -- none of which reach
+  // commit_history(). Commit history stays as the fallback for apps that
+  // expose no AX value (some Electron/WebKit fields) and when the user has not
+  // granted Accessibility permission.
+  if (opt.use_surrounding_text) {
+    string field_text =
+        ReadSurroundingText(opt.surrounding_max_chars, opt.surrounding_timeout_ms);
+    if (!field_text.empty()) {
+      window_text = field_text;
+    }
+    // Log only when the source flips: this is the line to look for when
+    // diagnosing whether Accessibility is actually working in the host app.
+    static int last_source = -1;
+    int source = field_text.empty() ? 0 : 1;
+    if (source != last_source) {
+      LOG(INFO) << "ai_predict context source: "
+                << (source ? "surrounding_text" : "commit_history")
+                << " (platform=" << SurroundingTextPlatform()
+                << " permitted=" << (SurroundingTextPermitted() ? "yes" : "no")
+                << " chars=" << window_text.size() << ")"
+                << " sample=「"
+                << window_text.substr(window_text.size() > 40
+                                          ? window_text.size() - 40
+                                          : 0)
+                << "」";
+      last_source = source;
+    }
   }
 
   // Context-first trigger: real Chinese context always fires (the committed
