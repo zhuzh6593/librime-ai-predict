@@ -130,6 +130,9 @@ void PredictTranslator::LoadOptions() {
   if (config->GetBool("ai_predict/refresh_composition", &refresh)) {
     engine_opt_.refresh_composition = refresh;
   }
+  if (config->GetInt("ai_predict/refresh_idle_ms", &n) && n >= 0) {
+    engine_opt_.refresh_idle_ms = n;
+  }
   string dev = "cpu";
   if (config->GetString("ai_predict/device", &dev)) {
     device_ = dev;

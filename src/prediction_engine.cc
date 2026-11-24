@@ -164,12 +164,60 @@ void PredictionEngine::WorkerLoop() {
         continue;
       }
       if (!opt_.refresh_composition) {
-        // Cache is already updated above; the next keystroke's
-        // PredictTranslator::Query will hit it and surface the AI row inside
-        // a normal, freshly built menu. Refreshing the composition here (pop
-        // + recompose) visibly blinks the preedit on every pause, which users
-        // read as "my input appears then disappears".
+        // Cache-only mode. NOTE: this effectively hides AI candidates -- the
+        // next keypress changes the prompt, so its Query cache-MISSes and the
+        // stored result is never surfaced. Keep refresh_composition on unless
+        // debugging the refresh itself.
         continue;
+      }
+
+      // Idle guard: the refresh below pops + recomposes the composition, and
+      // doing that on every finished inference (i.e. on every keystroke with
+      // long context) is what used to swallow keys. Wait a beat and only
+      // refresh if nothing new arrived -- meaning the user really paused.
+      {
+        std::unique_lock<std::mutex> lock(worker_mutex_);
+        const int slice_ms = 40;
+        int waited = 0;
+        while (waited < opt_.refresh_idle_ms && !shutdown_) {
+          worker_cv_.wait_for(lock, std::chrono::milliseconds(slice_ms));
+          waited += slice_ms;
+          if (!pending_ct2_input_.empty()) {
+            break;
+          }
+        }
+        if (shutdown_) {
+          return;
+        }
+        if (!pending_ct2_input_.empty()) {
+          LOG(INFO) << "PredictionEngine: skip refresh, user resumed typing";
+          continue;
+        }
+      }
+
+      // Re-verify after the wait: the composition may have changed during it.
+      {
+        string now = StripSpaces(ctx->input());
+        bool still_matches =
+            key.empty() || now == key ||
+            (now.size() > key.size() &&
+             now.compare(now.size() - key.size(), key.size(), key) == 0);
+        if (!still_matches) {
+          LOG(INFO) << "PredictionEngine: skip refresh, composition changed"
+                    << " during idle window (prompt='" << prompt_snap
+                    << "' now='" << now << "')";
+          continue;
+        }
+      }
+
+      // One refresh per cache key: repeated GetCachedResult queries for the
+      // same result must not re-pop the composition.
+      {
+        std::lock_guard<std::mutex> lock(result_mutex_);
+        if (last_refreshed_key_ == cache_key) {
+          continue;
+        }
+        last_refreshed_key_ = cache_key;
       }
       // A plain update_notifier won't do: ConcreteEngine::Compose skips
       // segments with status >= kGuess, so it would reuse the old menu and

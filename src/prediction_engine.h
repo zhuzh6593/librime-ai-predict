@@ -33,10 +33,16 @@ struct PredictionEngineOptions {
   /// >1 enables beam hypotheses (backend widens the beam accordingly).
   int num_hypotheses = 1;
   /// When true, finished inferences call Context::RefreshNonConfirmedComposition
-  /// so the AI row appears without waiting for the next keystroke. That pop +
-  /// recompose makes the visible preedit blink on every pause, so the default
-  /// here is false: the result stays cached and surfaces on the next key.
-  bool refresh_composition = false;
+  /// so the AI row appears during the pause instead of never (a keypress
+  /// changes the prompt, so the next Query always cache-MISSes -- cache-only
+  /// mode effectively hides AI candidates). Guarded by refresh_idle_ms so the
+  /// refresh only fires when the user has actually stopped typing.
+  bool refresh_composition = true;
+  /// Idle window after a finished inference: if any new request arrives
+  /// within it (i.e. the user kept typing), the refresh is skipped and the
+  /// newer inference handles the surface instead. This is what keeps the
+  /// refresh from firing on every keystroke and racing the main thread.
+  int refresh_idle_ms = 400;
 };
 
 class PredictionEngine {
@@ -83,6 +89,9 @@ class PredictionEngine {
   mutable std::mutex result_mutex_;
   std::string last_cache_key_;
   std::optional<std::vector<Prediction>> last_result_;
+  /// Key the composition refresh last fired for -- one refresh per result,
+  /// even if GetCachedResult is queried again later.
+  std::string last_refreshed_key_;
 };
 
 }  // namespace predict
