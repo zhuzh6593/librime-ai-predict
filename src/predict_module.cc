@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "ai_sync_processor.h"
 #include "predict_filter.h"
 #include "predict_translator.h"
 
@@ -65,6 +66,8 @@ static void rime_ai_predict_initialize() {
              new rime::Component<rime::predict::PredictTranslator>);
   r.Register("ai_predict_filter",
              new rime::Component<rime::predict::PredictFilter>);
+  r.Register("ai_predict_sync",
+             new rime::Component<rime::predict::AISyncProcessor>);
 }
 
 static void rime_ai_predict_finalize() {

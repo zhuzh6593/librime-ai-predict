@@ -64,6 +64,7 @@ endif()
 list(APPEND CTRANSLATE2_LIBRARIES ${CMAKE_DL_LIBS})
 
 set(RIME_AI_PREDICT_SRC
+  src/ai_sync_processor.cc
   src/predict_module.cc
   src/predict_translator.cc
   src/predict_filter.cc

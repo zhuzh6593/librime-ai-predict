@@ -3,6 +3,8 @@
 
 #include "prediction_engine.h"
 
+#include "ai_sync_processor.h"
+
 #include <glog/logging.h>
 
 #include <algorithm>
@@ -219,21 +221,33 @@ void PredictionEngine::WorkerLoop() {
         }
         last_refreshed_key_ = cache_key;
       }
+
+      // Enter the refresh critical section: main-thread key events gate on
+      // this flag via AISyncProcessor, so a key arriving now waits instead of
+      // racing the Context mutation (librime is not thread-safe).
+      g_refresh_in_progress.store(true, std::memory_order_release);
       // A plain update_notifier won't do: ConcreteEngine::Compose skips
       // segments with status >= kGuess, so it would reuse the old menu and
       // never re-invoke PredictTranslator::Query. RefreshNonConfirmedComposition
       // pops the non-selected tail, forcing a re-translate that hits our cache.
-      LOG(INFO) << "PredictionEngine: refreshing composition to surface "
-                << "AI candidate for cache_key='" << cache_key << "'";
-      ctx->RefreshNonConfirmedComposition();
-      // Refresh ran Compose() synchronously, so the new menu is fully built
-      // now -- only now is it safe to tell the frontend to re-read it. We
-      // signal off kRefreshUI rather than "ai_predict/text" because the latter
-      // is set during Compose, so a frontend racing on it would see a torn menu
-      // mid-build. See frontend_protocol.h for the protocol itself.
-      ctx->set_property(
-          protocol::kRefreshUI,
-          protocol::MakeRefreshUIPayload(protocol::kPluginCodename));
+      {
+        struct FlagGuard {
+          std::atomic<bool>& f;
+          ~FlagGuard() { f.store(false, std::memory_order_release); }
+        } guard{g_refresh_in_progress};
+
+        LOG(INFO) << "PredictionEngine: refreshing composition to surface "
+                  << "AI candidate for cache_key='" << cache_key << "'";
+        ctx->RefreshNonConfirmedComposition();
+        // Refresh ran Compose() synchronously, so the new menu is fully built
+        // now -- only now is it safe to tell the frontend to re-read it. We
+        // signal off kRefreshUI rather than "ai_predict/text" because the
+        // latter is set during Compose, so a frontend racing on it would see
+        // a torn menu mid-build. See frontend_protocol.h for the protocol.
+        ctx->set_property(
+            protocol::kRefreshUI,
+            protocol::MakeRefreshUIPayload(protocol::kPluginCodename));
+      }
     }
   }
 }
